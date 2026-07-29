@@ -173,7 +173,7 @@ export async function deductCredits(telegramId, amount, description, type = 'exp
  * Send welcome message with inline keyboard and main keyboard.
  */
 export function sendWelcome(bot, chatId) {
-    const webAppUrl = process.env.WEB_APP_URL || 'https://bazzar-pixel.vercel.app';
+    const webAppUrl = process.env.WEB_APP_URL || 'https://pixel-bice-six.vercel.app';
     const welcomeMessage = `
 🎉 *Добро пожаловать в NanoBanana Bot!*
 

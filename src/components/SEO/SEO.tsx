@@ -4,7 +4,7 @@ const SEO = ({
   title = 'Bazzar Pixel — AI генерация контента',
   description = 'Создавай изображения, видео и стикеры с помощью AI. Чат с экспертами.',
   image = '/og-image.png',
-  url = 'https://bazzar-pixel-clean.vercel.app'
+  url = 'https://pixel-bice-six.vercel.app'
 }) => (
   <Helmet>
     <title>{title}</title>

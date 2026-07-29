@@ -6,7 +6,7 @@ export function setupBotHandlers(bot) {
         console.error('❌ setupBotHandlers called with undefined bot!');
         return;
     }
-    const webAppUrl = process.env.WEB_APP_URL || 'https://bazzar-pixel.vercel.app';
+    const webAppUrl = process.env.WEB_APP_URL || 'https://pixel-bice-six.vercel.app';
 
     // /start command
     bot.onText(/\/start(?: (.+))?/, async (msg, match) => {

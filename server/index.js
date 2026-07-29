@@ -29,11 +29,13 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 app.use(cors({
-    origin: [
-        'https://bazzar-pixel-clean-4zm4.vercel.app',
-        'https://t.me',
-        process.env.NODE_ENV !== 'production' ? 'http://localhost:5173' : null
-    ].filter(Boolean),
+    origin: (origin, callback) => {
+        if (!origin || origin.endsWith('.vercel.app') || origin === 'https://t.me' || origin.startsWith('http://localhost:')) {
+            callback(null, true);
+        } else {
+            callback(null, true); // Allow all web app origins
+        }
+    },
     credentials: true
 }));
 app.use(express.json({ limit: '15mb' }));

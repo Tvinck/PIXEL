@@ -593,13 +593,14 @@ export function registerRoutes(app, bot) {
 
     app.get('/api/setup-webhook', async (req, res) => {
         const token = process.env.TELEGRAM_BOT_TOKEN;
-        if (!token) return res.status(500).json({ error: 'TELEGRAM_BOT_TOKEN is missing in env' });
+        if (!token) return res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN is missing in environment variables on Vercel' });
         
-        const host = req.headers.host;
+        const host = req.headers['x-forwarded-host'] || req.headers.host;
         const webhookUrl = `https://${host}/api/webhook`;
         try {
-            const result = await bot.setWebhook(webhookUrl);
-            res.json({ status: 'attempted', webhookUrl, telegramResponse: result });
+            const tgRes = await fetch(`https://api.telegram.org/bot${token}/setWebhook?url=${encodeURIComponent(webhookUrl)}`);
+            const tgData = await tgRes.json();
+            res.json({ status: 'success', webhookUrl, telegramResponse: tgData });
         } catch (e) {
             res.status(500).json({ error: e.message });
         }

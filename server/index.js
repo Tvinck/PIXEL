@@ -109,22 +109,20 @@ async function setupRouting() {
         app.use('/api/generate-greeting-v2', createProxyMiddleware({ target: `http://localhost:${PORTS.GENERATION}/api/generation/generate-greeting-v2`, pathRewrite: { '^/api/generate-greeting-v2': '' }, on: { proxyReq: fixRequestBody } }));
     }
 
-    // --- ALWAYS REGISTER GATEWAY-LEVEL ROUTES ---
-    // Some routes (marketing, templates, experts, stickers) are still in the monolith routes 
-    // and haven't been fully moved to microservices yet.
-    console.log('   📦 Initializing gateway-level modular routes...');
-    registerRoutes(app, bot);
-
     // --- TELEGRAM BOT (Gateway Level) ---
     const botToken = process.env.TELEGRAM_BOT_TOKEN;
     const isPolling = process.env.POLLING === 'true' && !process.env.VERCEL;
 
-    if (botToken) {
+    if (botToken && !bot) {
         bot = new TelegramBot(botToken, { polling: isPolling });
         console.log(`🤖 Bot Gateway initialized. Polling: ${isPolling}`);
         setupBotHandlers(bot);
         initCronJobs(bot);
     }
+
+    // --- ALWAYS REGISTER GATEWAY-LEVEL ROUTES ---
+    console.log('   📦 Initializing gateway-level modular routes...');
+    registerRoutes(app, bot);
 
     // --- STATIC FRONTEND ---
     const distPath = path.resolve(__dirname, '../dist');

@@ -1,0 +1,265 @@
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+
+/**
+ * T-Bank Payment Integration Widget
+ * Supports: T-Pay, SBP, Mir Pay, SberPay
+ * Docs: https://www.tbank.ru/kassa/dev/payments/widget/
+ */
+const TBankPaymentWidget = ({
+    amount,
+    description,
+    userId,
+    telegramId,
+    userEmail,
+    credits,
+    promoCode,
+    terminalKey, // From env or props
+    onSuccess,
+    onError,
+    widgetTypes = ['tpay', 'sbp', 'mirpay', 'sberpay'], // Default all widgets
+    displayParams = {
+        gap: 0.5,
+        height: 3.5,
+        radius: 0.75,
+        theme: {
+            default: 'accent'
+        }
+    }
+}: any) => {
+    const containerRef = useRef<any>(null);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState<any>(null);
+    const integrationRef = useRef<any>(null);
+
+    const initializeWidget = useCallback(async () => {
+        try {
+            if (!(window as any).PaymentIntegration) {
+                throw new Error('PaymentIntegration not loaded');
+            }
+
+            // Get terminal key
+            const key = terminalKey || ((import.meta as any).env && (import.meta as any).env.VITE_TBANK_TERMINAL_KEY);
+
+            // Skip widget if no key or demo key (widgets don't work with demo)
+            if (!key || key.includes('DEMO')) {
+                console.warn('TBankPaymentWidget: No production Terminal Key, hiding widget');
+                setError('No Terminal Key');
+                return;
+            }
+
+            const initConfig = {
+                terminalKey: key,
+                product: 'eacq',
+                features: {
+                    payment: {}
+                }
+            };
+
+            const integration = await (window as any).PaymentIntegration.init(initConfig);
+
+            // Create payment integration
+            const paymentIntegration = await integration.payments.create(
+                'bazzar-payment-widget',
+                {
+                    status: {
+                        changedCallback: async (status: any) => {
+                            if (status === 'SUCCESS' && onSuccess) {
+                                onSuccess(status);
+                            } else if (['CANCELED', 'REJECTED', 'PROCESSING_ERROR'].includes(status) && onError) {
+                                onError(new Error(`Payment ${status}`));
+                            }
+                        }
+                    },
+                    dialog: {
+                        closedCallback: async () => {
+                        }
+                    },
+                    payment: {
+                        failedPaymentStartCallback: async (err: any) => {
+                            console.error('Payment start failed:', err);
+                            setError('Ошибка при создании платежа');
+                            if (onError) onError(err);
+                        }
+                    }
+                }
+            );
+
+            // Mount to container
+            if (containerRef.current) {
+                await paymentIntegration.mount(containerRef.current);
+            }
+
+            // Set payment start callback
+            await integration.payments.setPaymentStartCallback(async (paymentType: any) => {
+
+                // Call backend to initialize payment
+                const res = await fetch('/api/payments/init', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        amount,
+                        description,
+                        userId,
+                        telegramId,
+                        userEmail,
+                        credits,
+                        promoCode,
+                        connectionType: 'Widget', // CRITICAL for widget
+                        paymentType // For analytics
+                    })
+                });
+
+                const data = await res.json();
+
+                if (!data.paymentUrl) {
+                    throw new Error(data.error || 'Failed to get payment URL');
+                }
+
+                // Save for success check
+                if (data.paymentId) {
+                    localStorage.setItem('pending_payment_id', data.paymentId);
+                    localStorage.setItem('pending_order_id', data.orderId);
+                }
+
+                return data.paymentUrl;
+            });
+
+            // Update widget types
+            await paymentIntegration.updateWidgetTypes(widgetTypes);
+
+            // Update display params
+            await paymentIntegration.updateDisplayParams(displayParams);
+
+            // Set theme (auto-detect or force)
+            const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+            await paymentIntegration.setTheme(isDark ? 'dark' : 'light');
+
+            // Set language
+            await paymentIntegration.setLang('ru');
+
+            integrationRef.current = paymentIntegration;
+            setLoading(false);
+
+        } catch (err: any) {
+            console.error('Widget initialization error:', err);
+            setError('Не удалось инициализировать виджет оплаты');
+            setLoading(false);
+            if (onError) onError(err);
+        }
+    }, [terminalKey, amount, description, userId, telegramId, userEmail, credits, promoCode, onSuccess, onError, widgetTypes, displayParams]);
+
+    useEffect(() => {
+        // Check if script already loaded
+        if ((window as any).PaymentIntegration) {
+            initializeWidget();
+            return;
+        }
+
+        // Check if script is already being loaded
+        const existingScript = document.querySelector('script[src="https://integrationjs.tbank.ru/integration.js"]');
+        if (existingScript) {
+            existingScript.addEventListener('load', initializeWidget);
+            return () => {
+                existingScript.removeEventListener('load', initializeWidget);
+            };
+        }
+
+        // Load T-Bank Integration Script
+        const script = document.createElement('script');
+        script.src = 'https://integrationjs.tbank.ru/integration.js';
+        script.async = true;
+        script.onload = () => {
+            initializeWidget();
+        };
+        script.onerror = (err: any) => {
+            console.error('Failed to load T-Bank script:', err);
+            setError('Не удалось загрузить виджет оплаты. Используйте классическую кнопку ниже.');
+            setLoading(false);
+        };
+
+        document.body.appendChild(script);
+
+        return () => {
+            // Cleanup
+            if (integrationRef.current) {
+                integrationRef.current.unmount().catch(console.error);
+            }
+            // Don't remove script - it might be used by other components
+        };
+    }, [initializeWidget]);
+
+    if (error) {
+        // Silently hide widget if it fails - user will see classic button below
+        console.warn('TBankPaymentWidget error:', error);
+        return null;
+    }
+
+    return (
+        <div className="w-full mt-4 flex flex-col items-center">
+            {loading && (
+                <div className="flex items-center justify-center py-8">
+                    <div className="w-6 h-6 border-2 border-slate-300 dark:border-slate-600 border-t-slate-600 dark:border-t-slate-300 rounded-full animate-spin"></div>
+                    <span className="ml-3 text-sm text-slate-600 dark:text-slate-400">Загрузка кассы...</span>
+                </div>
+            )}
+
+            {/* Widget container */}
+            <div ref={containerRef} className="w-full min-h-[50px]"></div>
+
+            {/* Fallback / Explicit Button */}
+            {(error || !loading) && (
+                <div className="w-full mt-4 animate-in fade-in slide-in-from-bottom-4">
+                    <button
+                        onClick={async () => {
+                            // Direct API Link Fallback
+                            setLoading(true);
+                            try {
+                                const res = await fetch('/api/payment-init', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                        amount,
+                                        description,
+                                        userId,
+                                        telegramId,
+                                        userEmail,
+                                        credits,
+                                        promoCode,
+                                        connectionType: 'Link',
+                                        paymentType: 'Card'
+                                    })
+                                });
+                                const data = await res.json();
+                                if (data.paymentUrl) {
+                                    if ((window as any).Telegram?.WebApp?.openLink) {
+                                        (window as any).Telegram.WebApp.openLink(data.paymentUrl);
+                                    } else {
+                                        window.location.href = data.paymentUrl;
+                                    }
+                                } else {
+                                    alert('Ошибка создания ссылки');
+                                }
+                            } catch (e) {
+                                console.error(e);
+                                alert('Ошибка сети');
+                            } finally {
+                                setLoading(false);
+                            }
+                        }}
+                        className="w-full py-4 rounded-card bg-[#ffe646] text-black font-bold text-[15px] hover:brightness-105 active:scale-[0.98] transition-all shadow-lg shadow-yellow-500/20 flex items-center justify-center gap-2"
+                    >
+                        <span>Оплатить {amount} ₽</span>
+                    </button>
+
+                    <div className="text-center mt-3">
+                        <p className="text-[10px] text-slate-400 font-medium opacity-60">
+                            Если виджет выше не загрузился, используйте эту кнопку.
+                        </p>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default TBankPaymentWidget;

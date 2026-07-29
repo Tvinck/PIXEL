@@ -1,0 +1,371 @@
+import express from 'express';
+import multer from 'multer';
+import sharp from 'sharp';
+import { supabase } from '../lib/supabase.js';
+import { aiService } from '../ai-service.js';
+import { MODEL_PRICING, calculateCost } from '../shared/model-pricing.js';
+// Legacy compat: keep PRICING reference working
+const PRICING = MODEL_PRICING;
+import { verifyTelegramWebAppData } from '../utils.js';
+import { addGenerationJob } from '../queue.js';
+import { authTG } from '../middleware/auth.js';
+import { addBranding } from '../utils/branding.js';
+import { getCache } from '../utils/promptCache.js';
+
+// --- РОУТИНГ ГЕНЕРАЦИИ ---
+// Отвечает за прием заданий на создание контента, проверку баланса пользователя,
+// кэширование результатов и взаимодействие с очередью заданий (pg-boss).
+
+const router = express.Router();
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
+    fileFilter: (req, file, cb) => {
+        const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+        cb(null, allowed.includes(file.mimetype));
+    }
+});
+
+/**
+ * GET /api/generation/config
+ * Returns model catalog and pricing.
+ */
+router.get('/config', (req, res) => {
+    res.json({
+        pricing: MODEL_PRICING
+    });
+});
+
+/**
+ * GET /api/generation/jobs/:id
+ * Checks generation job status.
+ */
+router.get('/jobs/:id', async (req, res) => {
+    const { id } = req.params;
+    try {
+        const { data: creation } = await supabase
+            .from('creations')
+            .select('*')
+            .eq('generation_id', id)
+            .maybeSingle();
+
+        if (creation) {
+            // Lazy polling for Kie jobs that are still placeholders
+            if (creation.image_url && creation.image_url.includes('loading') && creation.generation_id) {
+                try {
+                    const kieKey = process.env.KIE_API_KEY;
+                    const kRes = await fetch(`https://api.kie.ai/api/v1/jobs/recordInfo?taskId=${creation.generation_id}`, {
+                        headers: { 'Authorization': `Bearer ${kieKey}` }
+                    });
+
+                    if (kRes.ok) {
+                        const kData = await kRes.json();
+                        const kState = kData.data?.state || kData.state;
+
+                        if (kState === 'success' || kState === 'completed') {
+                            let resultData = kData.data?.resultJson || kData.resultJson || kData.data?.result || kData.result;
+                            if (typeof resultData === 'string') { try { resultData = JSON.parse(resultData); } catch (e) { } }
+
+                            let finalUrl = resultData?.resultUrls?.[0] || resultData?.url || (Array.isArray(resultData) && resultData[0]);
+                            if (finalUrl) {
+                                await supabase.from('creations').update({
+                                    image_url: finalUrl,
+                                    thumbnail_url: finalUrl,
+                                    completed_at: new Date().toISOString()
+                                }).eq('id', creation.id);
+                                return res.json({ job: { status: 'completed', result_url: finalUrl } });
+                            }
+                        }
+                    }
+                } catch (e) { console.error('Lazy polling error:', e); }
+            }
+            return res.json({ job: { status: 'completed', result_url: creation.image_url } });
+        }
+
+        // Check for refunds
+        const { data: refund } = await supabase
+            .from('transactions')
+            .select('*')
+            .eq('description', `Refund: Job ${id} Failed`)
+            .maybeSingle();
+
+        if (refund) return res.json({ job: { status: 'failed', error_message: 'Generation failed and credits were refunded' } });
+
+        res.json({ job: { status: 'active' } });
+    } catch (e) {
+        res.status(500).json({ error: 'Status check failed' });
+    }
+});
+
+/**
+ * POST /api/generation/enhance-prompt
+ * Enhances a user prompt with GPT for better generation results.
+ */
+router.post('/enhance-prompt', async (req, res) => {
+    try {
+        const { prompt } = req.body;
+        if (!prompt || !prompt.trim()) {
+            return res.status(400).json({ error: 'Prompt is required' });
+        }
+        const enhanced = await aiService.enhancePrompt(prompt.trim());
+        res.json({ enhanced });
+    } catch (e) {
+        console.error('Enhance prompt error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/generation/generate
+ * Main endpoint for initiating AI generations (images, video, etc.).
+ * 
+ * Security: protected by `authTG`. Resolves the user session via verified telegram initData or JWT.
+ * 
+ * Logic:
+ * 1. Checks and deducts credit balance for the corresponding model cost using Postgres function `process_generation_payment`.
+ * 2. Processes uploaded media files (converts images using sharp and uploads to Supabase Storage `uploads` bucket).
+ * 3. Checks the prompt cache for simple text-to-image prompts to return immediate results.
+ * 4. Puts the generation task into pg-boss queue via `addGenerationJob`.
+ * 5. Returns a JSON indicating if the job was queued or completed synchronously.
+ * 
+ * Request Body parameters:
+ * - prompt {string}: Generation prompt
+ * - type {string}: Model type (e.g., flux_nano, kling_video)
+ * - aspectRatio {string}: Aspect ratio (e.g. "1:1", "16:9")
+ * - options {object|string}: JSON-encoded options payload
+ * 
+ * Multipart files:
+ * - files {Array<File>}: Source images/videos for reference/image-to-image.
+ */
+router.post('/generate', authTG, upload.any(), async (req, res) => {
+    try {
+        let { prompt, type, aspectRatio, options } = req.body;
+        if (typeof options === 'string') { try { options = JSON.parse(options); } catch (e) { } }
+        options = options || {};
+
+        // Retrieve verified user identity from authTG middleware
+        const userId = req.tgUser.uuid;
+        const telegramId = req.tgUser.id;
+
+        // Propagate telegramId downstream
+        options.telegramId = telegramId;
+
+        const modelKey = (type || '').toLowerCase();
+        let cost = PRICING[modelKey] || PRICING['default'];
+
+        // Secure payment deduction and XP rewards
+        const { data: payData, error: payError } = await supabase.rpc('process_generation_payment', {
+            p_user_id: userId,
+            p_cost: cost,
+            p_xp_reward: 2,
+            p_service_type: 'generation'
+        });
+
+        if (payError) return res.status(402).json({ error: 'Insufficient Credit' });
+        const newBalance = payData?.new_balance;
+
+        // Handle File Uploads
+        let sourceFiles = [];
+        if (req.files) {
+            for (const file of req.files) {
+                const processedBuffer = await sharp(file.buffer).jpeg({ quality: 90 }).toBuffer();
+                const fileName = `${Date.now()}_${Math.random().toString(36).substring(7)}.jpg`;
+                const { error } = await supabase.storage.from('uploads').upload(fileName, processedBuffer, { contentType: 'image/jpeg' });
+                if (!error) sourceFiles.push(supabase.storage.from('uploads').getPublicUrl(fileName).data.publicUrl);
+            }
+        }
+        if (sourceFiles.length > 0) options.source_files = sourceFiles;
+
+        // --- CACHE CHECK ---
+        // Only cache simple text-to-image prompts without source files
+        if (sourceFiles.length === 0 && type !== 'video') {
+            const cachedResult = getCache(prompt, modelKey);
+            if (cachedResult) {
+                console.log(`[Cache Hit] Serving cached result for: "${prompt}" [${modelKey}]`);
+                return res.json({
+                    success: true,
+                    status: 'completed',
+                    jobId: `cached_${Date.now()}`,
+                    newBalance,
+                    imageUrl: cachedResult.imageUrl
+                });
+            }
+        }
+
+        const jobResult = await addGenerationJob({
+            prompt, type, userId, cost,
+            options: { ...options, aspect_ratio: aspectRatio }
+        });
+
+        res.json({
+            success: true,
+            status: jobResult?.imageUrl ? 'completed' : 'queued',
+            jobId: jobResult?.id || jobResult,
+            newBalance,
+            imageUrl: jobResult?.imageUrl || null
+        });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/generation/send-result
+ */
+router.post('/send-result', async (req, res) => {
+    try {
+        const { telegramId, imageUrl, prompt, addBranding: applyBranding } = req.body;
+        if (!telegramId || !imageUrl) return res.status(400).json({ error: 'Missing telegramId or imageUrl' });
+
+        let finalUrl = imageUrl;
+        // Skip branding on Vercel to avoid Sharp/Fontconfig issues
+        // if (applyBranding) { ... }
+
+        const caption = `✨ Готово!\n\n${prompt || 'AI Creation'}\n\n🤖 @Pixel_ai_bot`;
+        const isVideo = finalUrl.match(/\.(mp4|mov|webm|gif)$/i);
+
+        // Try bot instance first, fallback to direct Telegram API
+        const bot = req.app.get('bot');
+        if (bot) {
+            if (isVideo) await bot.sendVideo(telegramId, finalUrl, { caption, parse_mode: 'Markdown' });
+            else await bot.sendPhoto(telegramId, finalUrl, { caption, parse_mode: 'Markdown' });
+        } else {
+            const TG_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+            if (!TG_BOT_TOKEN) return res.status(503).json({ error: 'Bot token not configured' });
+
+            const method = isVideo ? 'sendVideo' : 'sendPhoto';
+            const payload = {
+                chat_id: telegramId,
+                caption,
+                parse_mode: 'Markdown'
+            };
+            if (isVideo) payload.video = finalUrl;
+            else payload.photo = finalUrl;
+
+            const tgRes = await fetch(`https://api.telegram.org/bot${TG_BOT_TOKEN}/${method}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const tgData = await tgRes.json();
+            if (!tgData.ok) {
+                console.error('Telegram send-result error:', tgData);
+                return res.status(500).json({ error: tgData.description || 'Telegram API error' });
+            }
+        }
+
+        res.json({ success: true });
+    } catch (err) {
+        console.error('Send-result error:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * GET /api/generation/stars — Public stars list for greetings
+ */
+router.get('/stars', async (req, res) => {
+    try {
+        const { data, error } = await supabase
+            .from('stars')
+            .select('*')
+            .eq('is_active', true)
+            .order('sort_order', { ascending: true });
+
+        if (error) throw error;
+        res.json({ success: true, stars: data || [] });
+    } catch (e) {
+        console.error('Fetch Stars Error:', e);
+        res.json({ success: true, stars: [] });
+    }
+});
+
+/**
+ * POST /api/generation/preview-greeting — Generate text preview
+ */
+router.post('/preview-greeting', authTG, async (req, res) => {
+    try {
+        const { starId, occasion, targetName } = req.body;
+        const { data: star } = await supabase.from('stars').select('*').eq('id', starId).single();
+        if (!star) return res.status(404).json({ error: 'Star not found' });
+
+        const prompt = `Напиши короткое поздравление (до 140 символов) от лица ${star.name} для ${targetName}. Повод: ${occasion}. Стиль речи должен быть характерным для ${star.name}. Без кавычек.`;
+        const result = await aiService.generateText(prompt);
+
+        res.json({ success: true, text: result || `${targetName}, поздравляю тебя! — ${star.name}` });
+    } catch (e) {
+        console.error('Preview Greeting Error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/generation/generate-greeting-v2
+ * Initiate dynamic video greeting generation from a star/celebrity using AI deepfake models.
+ * 
+ * Security: protected by `authTG`. Checks balance and resolves user UUID securely.
+ * 
+ * @param {import('express').Request} req - Body parameters: starId, occasion, targetName, customText
+ * @param {import('express').Response} res - Returns JSON with success, jobId, and new balance
+ */
+router.post('/generate-greeting-v2', authTG, async (req, res) => {
+    try {
+        const { starId, occasion, targetName, customText } = req.body;
+        const telegramId = req.tgUser.id;
+        const userUUID = req.tgUser.uuid;
+        const cost = MODEL_PRICING['star_greeting'] || 30;
+
+        const { data: stats } = await supabase.from('user_stats').select('current_balance').eq('user_id', userUUID).single();
+        const balance = stats?.current_balance || 0;
+        if (balance < cost) return res.status(402).json({ error: 'Insufficient credits' });
+
+        // Deduct credits
+        await supabase.rpc('deduct_credits', { user_uuid: userUUID, amount: cost });
+
+        // Fetch star
+        const { data: star } = await supabase.from('stars').select('*').eq('id', starId).single();
+        if (!star) return res.status(404).json({ error: 'Star not found' });
+
+        // Generate greeting text if not custom
+        let greetingText = customText;
+        if (!greetingText) {
+            const prompt = `Напиши короткое поздравление (до 140 символов) от лица ${star.name} для ${targetName}. Повод: ${occasion}. Стиль: характерный для ${star.name}. Без кавычек.`;
+            greetingText = await aiService.generateText(prompt) || `${targetName}, поздравляю! — ${star.name}`;
+        }
+
+        // Add video generation job
+        const jobResult = await addGenerationJob({
+            prompt: greetingText,
+            type: 'video',
+            cost,
+            userId: userUUID,
+            options: {
+                imageUrl: star.image_url,
+                telegramId,
+                greetingMode: true,
+                starName: star.name
+            }
+        });
+
+        const newBalance = balance - cost;
+        res.json({
+            success: true,
+            jobId: jobResult?.id,
+            newBalance,
+            videoUrl: jobResult?.imageUrl || null,
+            greetingText
+        });
+    } catch (e) {
+        console.error('Generate Greeting V2 Error:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+/**
+ * POST /api/generation/marketplace/:id/track
+ */
+router.post('/marketplace/:id/track', async (req, res) => {
+    res.json({ ok: true });
+});
+
+export default router;

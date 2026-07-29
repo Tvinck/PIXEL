@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+  
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Pixel AI - Creative Studio</title>
+
+  <!-- PWA -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Bazzar Pixel">
+  <meta name="theme-color" content="#0f0f1a">
+
+  <!-- Иконки для iOS -->
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+
+  <!-- Telegram WebApp SDK -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <!-- Chunk Load Error Handler -->
+  <script>
+    window.addEventListener('error', function(e) {
+      const msg = e.message || '';
+      const isChunkError = msg.includes('Loading chunk') || 
+                           msg.includes('Unexpected EOF') ||
+                           msg.includes('SyntaxError');
+      
+      const target = e.target || {};
+      const isScriptError = target.tagName === 'SCRIPT' || target.tagName === 'LINK';
+      const url = target.src || target.href || '';
+      
+      if (isChunkError || (isScriptError && (url.includes('assets/') || url.includes('index-')))) {
+        console.error('📦 Critical load error detected:', url || e.message);
+        
+        const lastReload = localStorage.getItem('pixel_last_reload');
+        const now = Date.now();
+        
+        // Reload if last reload was more than 10s ago
+        if (!lastReload || (now - parseInt(lastReload)) > 10000) {
+          localStorage.setItem('pixel_last_reload', now.toString());
+
+          // Nuclear option: Unregister all service workers then reload
+          if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.getRegistrations().then(function(registrations) {
+              for(let registration of registrations) {
+                registration.unregister();
+              }
+              // Force reload with cache busting
+              const retryUrl = new URL(window.location.href);
+              retryUrl.searchParams.set('v', now.toString());
+              window.location.replace(retryUrl.toString());
+            });
+          } else {
+             const retryUrl = new URL(window.location.href);
+             retryUrl.searchParams.set('v', now.toString());
+             window.location.replace(retryUrl.toString());
+          }
+        }
+      }
+    }, true);
+
+    // Also catch unhandled rejections (often where ChunkLoadErrors end up)
+    window.addEventListener('unhandledrejection', function(event) {
+      if (event.reason && event.reason.name === 'ChunkLoadError') {
+        window.location.reload();
+      }
+    });
+  </script>
+
+  <!-- Yandex ID SDK -->
+  <script src="https://yastatic.net/s3/passport-sdk/autofill/v1/sdk-suggest-with-polyfills-latest.js"></script>
+  <script src="https://yastatic.net/s3/passport-sdk/autofill/v1/sdk-suggest-token-with-polyfills-latest.js"></script>
+
+  <!-- Fonts (Async) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap"
+    rel="stylesheet" />
+</head>
+
+
+<body>
+  <div id="root"></div>
+  <script type="module" src="/src/main.jsx"></script>
+  <script src="https://integrationjs.tbank.ru/integration.js" async></script>
+</body>
+
+</html>

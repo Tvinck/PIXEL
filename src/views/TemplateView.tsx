@@ -1,0 +1,506 @@
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { Upload, Zap, Image as ImageIcon, Sparkles, X, ChevronRight, ChevronLeft, Settings2, Film, LayoutGrid, Edit3 } from 'lucide-react';
+import { useUser } from '../context/UserContext';
+import { useToast } from '../context/ToastContext';
+import { useSound } from '../context/SoundContext';
+import { aiService } from '../ai-client';
+import galleryAPI from '../lib/galleryAPI';
+import templatesData from '../data/templates';
+import InsufficientCreditsModal from '../components/InsufficientCreditsModal';
+
+// Import Dynamic Models & Pricing
+import { MODEL_FAMILIES, calculateModelCost, KIE_MODELS_FLAT } from '../config/model-catalog';
+
+import { getCDNUrl } from '../hooks/useCDN';
+// Typewriter Component
+const TypewriterText: React.FC<any> = ({ text, speed = 10, startDelay = 500 }) => {
+    const [displayedText, setDisplayedText] = useState('');
+
+    useEffect(() => {
+        setDisplayedText('');
+        let currentIndex = 0;
+
+        const timeout = setTimeout(() => {
+            const interval = setInterval(() => {
+                if (currentIndex < text.length) {
+                    setDisplayedText(prev => prev + text[currentIndex]);
+                    currentIndex++;
+                } else {
+                    clearInterval(interval);
+                }
+            }, speed);
+
+            return () => clearInterval(interval);
+        }, startDelay);
+
+        return () => clearTimeout(timeout);
+    }, [text, speed, startDelay]);
+
+    return <span>{displayedText}</span>;
+};
+
+const TemplateView: React.FC<any> = ({ onOpenPayment }) => {
+    const { id } = useParams();
+    const navigate = useNavigate();
+    const location = useLocation();
+    const { user, stats, updateStats, startGlobalGen, closeGlobalGen, setGlobalGenResult } = useUser();
+    const toaster = useToast();
+    const { playClick, playSuccess } = useSound();
+
+    const [template, setTemplate] = useState<any>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isProcessing, setIsProcessing] = useState(false);
+
+    // File State
+    const [selectedFiles, setSelectedFiles] = useState<any[]>([]);
+    const [previewUrls, setPreviewUrls] = useState<any[]>([]);
+
+    // UI State
+    const [showCreditModal, setShowCreditModal] = useState(false);
+    const [selectedModel, setSelectedModel] = useState<string | null>(null);
+    const [aspectRatio, setAspectRatio] = useState('9:16');
+    const [activeTab, setActiveTab] = useState('templates');
+    const [customPrompt, setCustomPrompt] = useState('');
+
+    // Load Template
+    useEffect(() => {
+        const load = async () => {
+            setIsLoading(true);
+            let found = await galleryAPI.getTemplate(id);
+            if (!found && location.state?.template) found = location.state.template;
+            if (!found) found = templatesData.find(t => t.id === id);
+
+            if (found) {
+                // Normalize
+                const norm = {
+                    ...found,
+                    requiredFilesCount: found.requiredFilesCount || 1,
+                    mediaType: found.mediaType || 'image',
+                    model_id: found.model_id || 'nano_banana'
+                };
+                setTemplate(norm);
+
+                const initialsFiles = new Array(norm.requiredFilesCount).fill(null);
+                const initialsUrls = new Array(norm.requiredFilesCount).fill(null);
+
+                if (location.state?.initialFile) {
+                    initialsFiles[0] = location.state.initialFile;
+                    initialsUrls[0] = URL.createObjectURL(location.state.initialFile);
+                }
+
+                setSelectedFiles(initialsFiles);
+                setPreviewUrls(initialsUrls);
+
+                setSelectedModel(norm.model_id);
+                // Default Aspect Ratio
+                if (norm.configuration?.aspect_ratio) setAspectRatio(norm.configuration.aspect_ratio);
+                setCustomPrompt(norm.generation_prompt || norm.prompt || norm.description || '');
+            }
+            setIsLoading(false);
+        };
+        load();
+        return () => previewUrls.forEach(url => url && URL.revokeObjectURL(url));
+    }, [id, location.state?.initialFile, location.state?.template, previewUrls]);
+
+    const similarTemplates = useMemo(() => {
+        if (!template) return [];
+        let similar = templatesData.filter(t => t.category === template.category && t.id !== template.id);
+
+        // Fallback if not enough similar templates in the exact category
+        if (similar.length < 5) {
+            const others = templatesData.filter(t => t.id !== template.id && t.category !== template.category);
+            similar = [...similar, ...others];
+        }
+
+        return similar.slice(0, 15);
+    }, [template]);
+
+    // Compatible Models Computation
+    const compatibleModels = useMemo(() => {
+        if (!template) return [];
+        const isVideo = template.mediaType === 'video' || template.category === 'video' || template.category === 'dances';
+
+        if (isVideo) {
+            return (MODEL_FAMILIES.video?.models || []).map((mId: string) => {
+                const m = (KIE_MODELS_FLAT as any)[mId];
+                if (!m) return null;
+                return {
+                    id: m.id,
+                    name: m.name,
+                    label: m.description,
+                    cost: m.baseCost,
+                    icon: <Film size={18} />
+                };
+            }).filter(Boolean);
+        } else {
+            // Photo Models: use 'image' family
+            const imageFamily = (MODEL_FAMILIES as any)['image'];
+            const modelIds: string[] = imageFamily?.models || [];
+
+            return modelIds
+                .map((mId: string) => (KIE_MODELS_FLAT as any)[mId])
+                .filter((m: any) => m && (m.capabilities?.includes('text-to-image') || m.capabilities?.includes('image-to-image')))
+                .map((m: any) => ({
+                    id: m.id,
+                    name: m.name,
+                    label: m.description,
+                    cost: m.baseCost,
+                    icon: m.id.includes('flux') ? <Sparkles size={18} /> : <Zap size={18} />
+                }));
+        }
+    }, [template]);
+
+    // Current Cost Calculation
+    const currentCost = useMemo(() => {
+        if (!selectedModel) return 0;
+        // Use the centralized calculator for accurate dynamic pricing
+        return calculateModelCost(selectedModel, {
+            resolution: '1K', // Default context, could be dynamic
+            quality: '720p',
+            duration: '5s'
+        });
+    }, [selectedModel]);
+
+
+    const handleFileChange = (e: any, index: any) => {
+        const file = e.target.files[0];
+        if (file) {
+            playClick();
+            const newFiles = [...selectedFiles];
+            newFiles[index] = file;
+            setSelectedFiles(newFiles);
+
+            const newUrls = [...previewUrls];
+            if (newUrls[index]) URL.revokeObjectURL(newUrls[index]);
+            newUrls[index] = URL.createObjectURL(file);
+            setPreviewUrls(newUrls);
+        }
+    };
+
+    const handleGenerate = async () => {
+        if (!template) return;
+        const currentModelId = selectedModel || template.model_id;
+        const validFiles = selectedFiles.filter(Boolean).length;
+
+        if ((stats?.current_balance || 0) < currentCost) {
+            setShowCreditModal(true);
+            return;
+        }
+
+        if (validFiles < (template.requiredFilesCount || 1)) {
+            toaster.error('Пожалуйста, загрузите фото');
+            return;
+        }
+
+        playClick();
+        playSuccess();
+        setIsProcessing(true);
+        const isVideo = template.category === 'video' || currentModelId.includes('video') || currentModelId.includes('kling');
+        const estTime = isVideo ? 120 : 15;
+        startGlobalGen(isVideo ? 'video' : 'image', estTime);
+
+        // Optimistic Deduction
+        if (stats) updateStats({ current_balance: stats.current_balance - currentCost });
+
+        try {
+            // Encode files
+            const validFilesList = selectedFiles.filter(Boolean);
+            const sourceFilesBase64 = await Promise.all(validFilesList.map(file => {
+                return new Promise((resolve, reject) => {
+                    if (!file) return resolve('');
+                    const img = new Image();
+                    const url = URL.createObjectURL(file);
+                    img.src = url;
+                    img.onload = () => {
+                        const canvas = document.createElement('canvas');
+                        let width = img.width, height = img.height;
+                        const MAX_SIZE = 1200;
+                        if (width > height) { if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; } }
+                        else { if (height > MAX_SIZE) { width *= MAX_SIZE / height; height = MAX_SIZE; } }
+                        canvas.width = Math.round(width);
+                        canvas.height = Math.round(height);
+                        const ctx = canvas.getContext('2d');
+                        if (ctx) ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        URL.revokeObjectURL(url);
+                        resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+                    };
+                    img.onerror = () => { URL.revokeObjectURL(url); reject(); };
+                });
+            }));
+
+            const finalPrompt = customPrompt.trim() !== '' ? customPrompt : (template.generation_prompt || template.prompt || '');
+            const options: any = {
+                userId: user?.id,
+                source_files: sourceFilesBase64,
+                template_id: template.id,
+                aspect_ratio: aspectRatio,
+                ...template.configuration // Merge defaults
+            };
+            // Force override if user selected
+            options.aspect_ratio = aspectRatio;
+
+            const result: any = await aiService.generateImageAsync(finalPrompt, currentModelId, options);
+
+            if (result.success) {
+                if (result.newBalance !== undefined) updateStats({ current_balance: result.newBalance });
+
+                if (result.status === 'queued') {
+                    // Async Job Started
+                    closeGlobalGen();
+                    toaster.success('Генерация началась 🚀 Мы пришлем результат в бот.', 5000);
+                    playSuccess();
+                } else {
+                    setGlobalGenResult({
+                        imageUrl: result.imageUrl,
+                        id: result.id || ('gen_' + Date.now()),
+                        prompt: finalPrompt
+                    });
+                    playSuccess();
+                }
+            } else {
+                throw new Error(result.error || 'Ошибка');
+            }
+
+        } catch (e: any) {
+            console.error(e);
+            toaster.error('Ошибка генерации: ' + (e?.message || e));
+            closeGlobalGen();
+        } finally {
+            setIsProcessing(false);
+        }
+    };
+
+    if (isLoading || !template) return <div className="min-h-screen bg-[#07060f] flex items-center justify-center text-white"><div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin" /></div>;
+
+    const isReady = selectedFiles.filter(Boolean).length >= (template.requiredFilesCount || 1);
+
+    return (
+        <div className="min-h-screen bg-[#07060f] text-white flex flex-col font-sans md:max-w-3xl md:mx-auto">
+            {/* --- HEADER (Back Button Included) --- */}
+            <div className="flex items-center justify-between px-4 py-3 bg-[#07060f]/85 backdrop-blur-md sticky top-0 z-30 pt-[calc(env(safe-area-inset-top)+10px)] border-b border-white/5">
+                <button
+                    onClick={() => { playClick(); navigate(-1); }}
+                    className="p-2 -ml-2 rounded-full hover:bg-white/10 transition-colors active:scale-95 duration-200 z-40"
+                >
+                    <ChevronLeft className="w-6 h-6 text-white" />
+                </button>
+                <h1 className="text-[17px] font-bold text-center absolute left-1/2 -translate-x-1/2 tracking-tight font-display">Создать</h1>
+                <div className="flex items-center gap-1.5 bg-white/10 px-2.5 py-1 rounded-full ml-auto">
+                    <Zap size={14} className="fill-white text-white" />
+                    <span className="text-[13px] font-semibold font-display">{stats?.current_balance || 0}</span>
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto pb-40 px-4 pt-2 space-y-6">
+
+                {/* --- UPLOAD --- */}
+                <div className="flex gap-3 overflow-x-auto no-scrollbar pb-1">
+                    {Array.from({ length: template.requiredFilesCount }).map((_, i) => (
+                        <div key={i} className="relative flex-shrink-0 w-24 h-24">
+                            <input type="file" accept="image/*" onChange={(e) => handleFileChange(e, i)} className="absolute inset-0 z-20 opacity-0 cursor-pointer w-full h-full" />
+
+                            {previewUrls[i] ? (
+                                <div className="w-full h-full rounded-card overflow-hidden bg-white/[0.02] relative border border-white/10 shadow-lg group cursor-pointer transition-colors duration-300 hover:border-white/20">
+                                    <img src={getCDNUrl(previewUrls[i] || '') ?? undefined} loading="lazy" decoding="async" alt="Preview" className="w-full h-full object-cover group-hover:opacity-60 transition-opacity duration-300" />
+
+                                    {/* Edit Overlay */}
+                                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none">
+                                        <div className="bg-black/50 p-2 rounded-full backdrop-blur-sm">
+                                            <Edit3 size={20} className="text-white" />
+                                        </div>
+                                    </div>
+
+                                    <button
+                                        onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleFileChange({ target: { files: [] } }, i); }}
+                                        className="absolute top-1.5 right-1.5 bg-black/60 p-1.5 rounded-full z-30 pointer-events-auto hover:bg-black transition-colors"
+                                    >
+                                        <X size={12} strokeWidth={3} className="text-white" />
+                                    </button>
+                                </div>
+                            ) : (
+                                <div className="w-full h-full bg-accent-blue/5 rounded-card flex flex-col items-center justify-center gap-1.5 border-2 border-dashed border-[#3390ec]/20 active:scale-95 transition-all duration-350 hover:bg-accent-blue/10 hover:border-[#3390ec]/40 group">
+                                    <Upload size={20} className="text-[#3390ec] group-hover:scale-110 transition-transform duration-200" strokeWidth={2.5} />
+                                    <span className="text-[#3390ec] text-[10px] font-bold uppercase tracking-widest text-center leading-none">Фото {i + 1}</span>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+
+                {/* --- IDEA & TEMPLATES TABS --- */}
+                <div className="bg-white/[0.03] backdrop-blur-md rounded-[24px] border border-white/5 shadow-lg overflow-hidden flex flex-col">
+                    {/* Tab Headers */}
+                    <div className="flex border-b border-white/5 bg-white/[0.02] p-1">
+                        <button
+                            onClick={() => { setActiveTab('templates'); playClick(); }}
+                            className={`flex-1 py-3 text-[13px] font-bold flex items-center justify-center gap-2 transition-all relative rounded-card active:scale-[0.98] ${activeTab === 'templates' ? 'bg-accent-blue text-white shadow-lg shadow-accent-blue/25 border border-white/10' : 'text-text-secondary hover:text-white'}`}
+                        >
+                            <LayoutGrid size={16} /> Похожие
+                        </button>
+                        <button
+                            onClick={() => { setActiveTab('edit'); playClick(); }}
+                            className={`flex-1 py-3 text-[13px] font-bold flex items-center justify-center gap-2 transition-all relative rounded-card active:scale-[0.98] ${activeTab === 'edit' ? 'bg-accent-blue text-white shadow-lg shadow-accent-blue/25 border border-white/10' : 'text-text-secondary hover:text-white'}`}
+                        >
+                            <Edit3 size={16} /> Редактировать
+                        </button>
+                    </div>
+
+                    {/* Tab Content */}
+                    <div className="p-4 bg-transparent min-h-[140px] relative">
+                        <AnimatePresence mode="popLayout" initial={false}>
+                            {activeTab === 'templates' ? (
+                                <motion.div
+                                    key="templates"
+                                    initial={{ opacity: 0, scale: 0.95 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.95 }}
+                                    transition={{ duration: 0.2 }}
+                                    className="flex gap-3 overflow-x-auto no-scrollbar pb-2"
+                                >
+                                    {similarTemplates.length > 0 ? (
+                                        <>
+                                            {similarTemplates.slice(0, 5).map(t => (
+                                                <button
+                                                    key={t.id}
+                                                    onClick={() => { playClick(); navigate(`/template/${t.id}`, { replace: true }); }}
+                                                    className="flex-shrink-0 w-24 aspect-[3/4] rounded-card overflow-hidden relative border border-white/10 active:scale-95 transition-transform shadow-md group"
+                                                >
+                                                    <img src={getCDNUrl(t.src || '') ?? undefined} loading="lazy" decoding="async" className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" />
+                                                </button>
+                                            ))}
+                                            {similarTemplates.length > 5 && (
+                                                <button
+                                                    onClick={() => { playClick(); navigate('/gallery'); }}
+                                                    className="flex-shrink-0 w-24 aspect-[3/4] rounded-card overflow-hidden relative border border-white/10 active:scale-95 transition-all shadow-md bg-white/[0.03] flex flex-col items-center justify-center gap-2 hover:bg-white/[0.08]"
+                                                >
+                                                    <div className="w-8 h-8 rounded-full bg-white/[0.05] border border-white/5 flex items-center justify-center">
+                                                        <ChevronRight size={16} className="text-[#3390ec]" />
+                                                    </div>
+                                                    <span className="text-[11px] font-bold text-[#3390ec] text-center leading-tight">Показать<br />больше</span>
+                                                </button>
+                                            )}
+                                        </>
+                                    ) : (
+                                        <div className="w-full text-center text-text-secondary text-[13px] py-6 font-medium">Нет похожих шаблонов</div>
+                                    )}
+                                </motion.div>
+                            ) : (
+                                <motion.div
+                                    key="edit"
+                                    initial={{ opacity: 0, scale: 0.95 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.95 }}
+                                    transition={{ duration: 0.2 }}
+                                    className="relative h-full flex flex-col"
+                                >
+                                    <textarea
+                                        value={customPrompt}
+                                        onChange={(e) => setCustomPrompt(e.target.value)}
+                                        placeholder="Опишите, что вы хотите получить..."
+                                        className="w-full h-full min-h-[100px] bg-transparent text-white text-[14px] leading-relaxed resize-none outline-none placeholder:text-gray-600 font-mono"
+                                    />
+                                </motion.div>
+                            )}
+                        </AnimatePresence>
+                    </div>
+                </div>
+
+                {/* --- MODEL SELECTOR (Compact) --- */}
+                <div>
+                    <div className="text-[11px] font-bold text-text-secondary uppercase tracking-widest mb-3 ml-1">Модель нейросети</div>
+                    <div className="bg-white/[0.03] rounded-card p-1.5 flex gap-2 overflow-x-auto no-scrollbar mb-3 border border-white/5">
+                        {compatibleModels.map(model => (
+                            <button
+                                key={model.id}
+                                onClick={() => { setSelectedModel(model.id); playClick(); }}
+                                className={`px-4 py-2.5 rounded-xl text-[13px] font-bold transition-all duration-200 whitespace-nowrap flex items-center gap-2 flex-shrink-0 active:scale-[0.98]
+                                    ${selectedModel === model.id
+                                        ? 'bg-accent-blue text-white shadow-lg shadow-accent-blue/20'
+                                        : 'text-text-secondary hover:text-white hover:bg-white/[0.05]'
+                                    }`}
+                            >
+                                <span className="text-[16px]">{model.icon}</span>
+                                {model.name}
+                            </button>
+                        ))}
+                    </div>
+
+                    {/* Selected Model Description + Cost */}
+                    {compatibleModels.find(m => m.id === selectedModel) && (
+                        <div className="px-1 flex justify-between items-center text-[12px] text-text-secondary bg-white/[0.03] rounded-xl p-3 animate-in fade-in slide-in-from-top-1 border border-white/5">
+                            <p className="flex-1 mr-4 leading-relaxed font-medium">
+                                {compatibleModels.find(m => m.id === selectedModel)?.label}
+                            </p>
+                            <div className="flex items-center gap-1.5 bg-[#ffcc00]/15 text-[#ffcc00] border border-[#ffcc00]/20 px-3 py-1.5 rounded-full text-[11px] font-black flex-shrink-0">
+                                <Zap size={12} className="fill-current animate-pulse" />
+                                {compatibleModels.find(m => m.id === selectedModel)?.cost}
+                            </div>
+                        </div>
+                    )}
+                </div>
+
+                {/* --- SIZE SELECTOR (Hidden for Video) --- */}
+                {template.mediaType !== 'video' && (
+                    <div>
+                        <div className="text-[11px] font-bold text-text-secondary uppercase tracking-widest mb-3 ml-1">Размер</div>
+                        <div className="grid grid-cols-4 gap-3">
+                            {['9:16', '3:4', '1:1', '16:9'].map(ratio => {
+                                const isSelected = aspectRatio === ratio;
+                                return (
+                                    <button
+                                        key={ratio}
+                                        onClick={() => { setAspectRatio(ratio); playClick(); }}
+                                        className={`py-3.5 rounded-xl text-[13px] font-bold transition-all border active:scale-[0.98] ${isSelected
+                                            ? 'bg-white text-black border-white shadow-lg shadow-white/15'
+                                            : 'bg-white/[0.03] text-text-secondary border-white/5 hover:bg-white/[0.08] hover:text-white'
+                                            }`}
+                                    >
+                                        {ratio}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+
+            </div>
+
+            {/* --- FOOTER BUTTON --- */}
+            <div className="fixed bottom-0 left-0 right-0 p-4 pb-8 bg-[#07060f]/90 backdrop-blur-xl border-t border-white/5 z-40">
+                <button
+                    onClick={handleGenerate}
+                    disabled={isProcessing}
+                    className={`w-full py-4 rounded-card flex items-center justify-center gap-2 text-[17px] font-bold transition-all shadow-xl active:scale-[0.98] ${isReady && !isProcessing
+                        ? 'bg-accent-blue text-white shadow-lg shadow-accent-blue/30 hover:brightness-110'
+                        : 'bg-white/[0.02] border border-white/5 text-white/20 shadow-none cursor-not-allowed'
+                        }`}
+                >
+                    {isProcessing ? (
+                        <>
+                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            <span>Создаем...</span>
+                        </>
+                    ) : (
+                        <>
+                            <span>Сгенерировать</span>
+                            <div className="flex items-center gap-1 bg-white/20 px-2.5 py-0.5 rounded-full text-[13px] font-bold">
+                                <Zap size={12} className="fill-white" /> {currentCost}
+                            </div>
+                        </>
+                    )}
+                </button>
+            </div>
+
+            <InsufficientCreditsModal
+                isOpen={showCreditModal}
+                onClose={() => setShowCreditModal(false)}
+                onTopUp={() => { navigate('/'); setTimeout(() => onOpenPayment?.(), 200); }}
+            />
+        </div>
+    );
+};
+
+export default TemplateView;

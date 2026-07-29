@@ -1,0 +1,345 @@
+/* Import Google Fonts - Premium Outfit & Inter */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Outfit:wght@400;500;600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Telegram Default Variables */
+    --tg-theme-bg-color: var(--tg-theme-bg-color, #0a0915);
+    --tg-theme-text-color: var(--tg-theme-text-color, #ffffff);
+    --tg-theme-hint-color: var(--tg-theme-hint-color, #9e9ea7);
+    --tg-theme-link-color: var(--tg-theme-link-color, #38bdf8);
+    --tg-theme-button-color: var(--tg-theme-button-color, #3b82f6);
+    --tg-theme-button-text-color: var(--tg-theme-button-text-color, #ffffff);
+    --tg-theme-secondary-bg-color: var(--tg-theme-secondary-bg-color, #111022);
+
+    /* Premium Theme Color System (Obsidian Midnight Dark by Default) */
+    --color-bg-primary: #07060f;
+    --color-bg-secondary: #0f0e1c;
+    --color-bg-elevated: #16152a;
+    --color-text-primary: #ffffff;
+    --color-text-secondary: #94a3b8;
+    --color-glass: rgba(15, 14, 28, 0.6);
+    --color-glass-border: rgba(255, 255, 255, 0.08);
+
+    /* Main Branding Gradients */
+    --color-primary: 59 130 246; /* Telegram Blue */
+    --color-secondary: 168 85 247; /* Purple */
+    --color-accent: 236 72 153; /* Pink */
+    --color-success: 16 185 129; /* Emerald */
+    --color-warning: 245 158 11; /* Amber */
+  }
+
+  /* Light Theme Overrides (if required by system settings) */
+  .tg-light {
+    --color-bg-primary: #f8fafc;
+    --color-bg-secondary: #ffffff;
+    --color-bg-elevated: #f1f5f9;
+    --color-text-primary: #0f172a;
+    --color-text-secondary: #64748b;
+    --color-glass: rgba(255, 255, 255, 0.8);
+    --color-glass-border: rgba(0, 0, 0, 0.06);
+  }
+
+  body {
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+    @apply antialiased overflow-x-hidden transition-colors duration-300;
+  }
+
+  body.dark {
+    background: #05040a;
+    color: #ffffff;
+  }
+}
+
+/* Base Variable Syncs with Tailwind classes */
+.dark {
+  --tg-theme-bg-color: #07060f;
+  --tg-theme-secondary-bg-color: #0f0e1c;
+  --tg-theme-text-color: #ffffff;
+  --tg-theme-hint-color: #94a3b8;
+  --tg-theme-link-color: #38bdf8;
+  --tg-theme-button-color: #3b82f6;
+  --tg-theme-button-text-color: #ffffff;
+}
+
+/* =========================================
+   PREMIUM BACKGROUNDS & SHADOWS
+   ========================================= */
+
+/* Dynamic glowing backdrop particles */
+.bg-glow-container {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.bg-glow-blue {
+  position: absolute;
+  width: 100vw;
+  height: 100vh;
+  top: -30%;
+  left: 50%;
+  transform: translateX(-50%);
+  background: radial-gradient(circle at 50% 0%, rgba(30, 110, 230, 0.4) 0%, rgba(15, 30, 90, 0.18) 35%, transparent 70%);
+  filter: blur(100px);
+}
+
+.bg-glow-purple {
+  position: absolute;
+  width: 70vw;
+  height: 70vw;
+  bottom: -20%;
+  right: -10%;
+  background: radial-gradient(circle, rgba(168, 85, 247, 0.08) 0%, transparent 70%);
+  filter: blur(120px);
+}
+
+/* Typography classes */
+.font-display {
+  font-family: 'Outfit', 'Space Grotesk', sans-serif;
+}
+
+.font-body {
+  font-family: 'Inter', sans-serif;
+}
+
+/* =========================================
+   GLASSMORPHISM & PREMIUM UI SHAPES
+   ========================================= */
+
+/* Ultra premium translucent cards with delicate glows */
+.glass-card {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.03) 0%, rgba(255, 255, 255, 0.01) 100%);
+  backdrop-filter: blur(24px) saturate(120%);
+  -webkit-backdrop-filter: blur(24px) saturate(120%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 12px 40px -10px rgba(0, 0, 0, 0.5), inset 0 1px 1px rgba(255, 255, 255, 0.05);
+  border-radius: 24px;
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.glass-card:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow: 0 16px 45px -8px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+}
+
+/* Multi-colored glowing border cards */
+.glass-card-accent {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.05) 0%, rgba(168, 85, 247, 0.05) 100%);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(168, 85, 247, 0.15);
+  box-shadow: 0 12px 35px -8px rgba(168, 85, 247, 0.15), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+}
+
+/* Glass navigation components */
+.glass-panel {
+  background: rgba(15, 14, 28, 0.75);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.4);
+}
+
+/* =========================================
+   KEYFRAME ANIMATIONS
+   ========================================= */
+
+@keyframes float {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-8px) rotate(1deg);
+  }
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 0.4;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.03);
+  }
+}
+
+@keyframes shimmer-shine {
+  0% {
+    left: -150%;
+  }
+  50% {
+    left: 150%;
+  }
+  100% {
+    left: 150%;
+  }
+}
+
+@keyframes rotation-beam {
+  0% {
+    transform: rotate(0deg);
+  }
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-float {
+  animation: float 5s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 4s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.animate-shimmer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -150%;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.15) 30%,
+    rgba(255, 255, 255, 0.3) 50%,
+    rgba(255, 255, 255, 0.15) 70%,
+    transparent 100%
+  );
+  transform: skewX(-25deg);
+  animation: shimmer-shine 4s ease-in-out infinite;
+}
+
+/* =========================================
+   GRADIENTS & BUTTONS
+   ========================================= */
+
+/* High-contrast colorful text */
+.gradient-text {
+  background: linear-gradient(135deg, #3b82f6 0%, #a855f7 50%, #ec4899 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.gradient-text-gold {
+  background: linear-gradient(135deg, #f59e0b 0%, #fbbf24 50%, #fef08a 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Tactile 3D click/hover effects */
+.btn-zenly {
+  @apply relative overflow-hidden font-bold tracking-wide transition-all duration-300 active:scale-95;
+  background: linear-gradient(135deg, #3b82f6 0%, #a855f7 100%);
+  box-shadow: 0 4px 15px rgba(168, 85, 247, 0.25);
+}
+
+.btn-zenly:hover {
+  box-shadow: 0 6px 20px rgba(168, 85, 247, 0.4);
+  filter: brightness(1.08);
+}
+
+/* =========================================
+   TELEGRAM INTEGRATION UTILITIES
+   ========================================= */
+
+/* Inputs matching platform styling */
+.tg-input {
+  @apply w-full bg-white/5 backdrop-blur-md rounded-input px-5 py-3.5 text-[15px] text-white placeholder:text-gray-500 outline-none border border-white/5 focus:border-[#3390ec]/50 focus:ring-1 focus:ring-[#3390ec]/20 transition-all duration-200;
+}
+
+.tg-action-btn {
+  @apply flex items-center justify-center gap-2 px-5 py-3 rounded-full font-bold text-sm bg-[#3390ec] hover:bg-blue-600 text-white transition-all shadow-md active:scale-[0.98];
+}
+
+/* Scrollbar behaviors */
+.tg-is-mobile::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
+
+.tg-is-desktop::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.tg-is-desktop::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.tg-is-desktop::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+
+.tg-is-desktop::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Smooth Scrolling */
+html {
+  scroll-behavior: smooth;
+  background-color: var(--color-bg-primary);
+}
+
+/* Desktop centering layout */
+@media (min-width: 768px) {
+  .desktop-container {
+    max-width: 800px;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+
+  .desktop-header {
+    max-width: 800px;
+    margin-left: auto;
+    margin-right: auto;
+    padding-left: 24px;
+    padding-right: 24px;
+  }
+
+  .desktop-fixed-bottom {
+    left: 256px !important;
+    max-width: 800px;
+    margin-left: auto;
+    margin-right: auto;
+  }
+}
+
+/* Bottom safe areas for phone notch/indicator bar */
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 16px);
+}
+
+.safe-area-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
